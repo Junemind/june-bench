@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "june-bench"
+version = "0.0.32"
+description = "Reproducible benchmark suite for memory/QA systems — June + pluggable competitors."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Junemind", email = "access@januraine.ai" }]
+keywords = ["benchmark", "rag", "memory", "qa", "retrieval", "evaluation", "llm", "june"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "License :: OSI Approved :: MIT License",
+]
+# The harness core is stdlib-only, so the base install pulls nothing and runs the bundled `smoke`
+# dataset offline. Heavy systems live behind extras.
+dependencies = []
+
+[project.urls]
+Homepage = "https://june.januraine.ai"
+Repository = "https://github.com/Junemind/june-bench"
+
+[project.optional-dependencies]
+# June reached over its REST API needs only a tiny HTTP client (SB3). For an in-process run, the
+# `june-local` extra pulls a SOURCE-PROTECTED (compiled) June wheel — never `june_ai` source.
+june-api = ["httpx>=0.24"]
+# The source-protected, compiled `junemind` distribution (built by the SP phase's
+# `.github/workflows/build-protected.yml`; ships .so, no .py). Named `junemind`, not `june`, to avoid
+# dependency-confusion with the unrelated public PyPI `june` package. Resolves from the private index:
+#   pip install "june-bench[june-local]" --index-url https://<private-index>/simple
+june-local = ["junemind>=0.1.0"]
+# The MCP agent-memory connector — `pip install "june-bench[mcp]"` gives you the bench AND the
+# june-mcp server for wiring June into Claude Desktop / Claude Code (also standalone on PyPI,
+# and bundled by the `june-ai` umbrella package).
+mcp = ["june-mcp>=0.1.0"]
+# Cognee runs its graph-RAG locally; fastembed is the keyless local embedder that lets it use the SAME
+# dense model June's lane uses (fair H2H). Bundled here so `pip install june-bench[cognee]` pulls it — no
+# separate step, no runtime pip-install.
+cognee = ["cognee[evals]", "fastembed>=0.2"]
+# Memory-lean streaming of the big June splits (locomo 164MB / lme 253MB): `retrieve --limit N` loads
+# only the needed queries+docs instead of json.load-ing the whole file (~1GB) → avoids OOM on small
+# boxes. OPTIONAL — without ijson the loader falls back to the full in-memory parse.
+stream = ["ijson>=3.2"]
+all = ["httpx>=0.24", "ijson>=3.2"]
+dev = ["pytest>=8", "ijson>=3.2"]
+
+[project.scripts]
+june-bench = "june_bench.cli:main"
+
+[tool.setuptools]
+packages = ["june_bench", "june_bench.systems", "june_bench.datasets"]
+
+[tool.setuptools.package-data]
+"june_bench.datasets" = ["fixtures/*.jsonl", "fixtures/*.json"]

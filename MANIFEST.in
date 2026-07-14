@@ -1,0 +1,7 @@
+# The sdist ships the runnable package + user docs only. Dev-only trees are pruned so nothing
+# internal (tests, guard lists, working notes) travels in a public artifact.
+prune tests
+prune june-retrieval-top-notch
+prune universal-june
+global-exclude *.pyc
+global-exclude __pycache__

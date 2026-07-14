@@ -1,0 +1,4 @@
+{"qid": "s1", "question": "Who wrote the first computer algorithm?", "golds": ["Ada Lovelace"], "context": ["Ada Lovelace is regarded as the first computer programmer; she wrote the first algorithm intended for a machine."]}
+{"qid": "s2", "question": "What city is the Eiffel Tower in?", "golds": ["Paris"], "context": ["The Eiffel Tower is a wrought-iron lattice tower on the Champ de Mars in Paris, France."]}
+{"qid": "s3", "question": "Which planet is known as the Red Planet?", "golds": ["Mars"], "context": ["Mars is often called the Red Planet because of its reddish appearance."]}
+{"qid": "s4", "question": "Who painted the Mona Lisa?", "golds": ["Leonardo da Vinci", "da Vinci"], "context": ["The Mona Lisa is a portrait painted by the Italian artist Leonardo da Vinci."]}

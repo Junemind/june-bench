@@ -1,0 +1,13 @@
+{
+  "meta": {"source": "june_bench smoke fixture", "format": "june"},
+  "documents": [
+    {"id": "conv-smoke#0::session_1", "text": "Caroline mentioned she joined an LGBTQ support group on 7 May 2023."},
+    {"id": "conv-smoke#0::session_2", "text": "They talked about the weather and weekend plans."},
+    {"id": "conv-smoke#1::session_1", "text": "I graduated with a degree in Business Administration in 2018."},
+    {"id": "conv-smoke#1::session_2", "text": "Later we discussed my first job after college."}
+  ],
+  "queries": [
+    {"id": "conv-smoke#0", "query": "When did Caroline go to the LGBTQ support group?", "gold": ["conv-smoke#0::session_1"], "haystack": ["conv-smoke#0::session_1", "conv-smoke#0::session_2"], "question_type": "cat2", "answer": "7 May 2023"},
+    {"id": "conv-smoke#1", "query": "What degree did I graduate with?", "gold": ["conv-smoke#1::session_1"], "haystack": ["conv-smoke#1::session_1", "conv-smoke#1::session_2"], "question_type": "single-session-user", "answer": "Business Administration"}
+  ]
+}

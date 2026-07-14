@@ -1,0 +1,20 @@
+[
+  {
+    "_id": "hp-smoke-1",
+    "question": "What nationality was the director of the 1994 film Ed Wood?",
+    "answer": "American",
+    "context": [
+      ["Ed Wood (film)", ["Ed Wood is a 1994 American biographical period comedy-drama film directed by Tim Burton.", " It stars Johnny Depp as the cult filmmaker Ed Wood."]],
+      ["Tim Burton", ["Timothy Walter Burton is an American filmmaker, born in Burbank, California."]]
+    ]
+  },
+  {
+    "_id": "hp-smoke-2",
+    "question": "In which city is the Eiffel Tower located?",
+    "answer": "Paris",
+    "context": [
+      ["Eiffel Tower", ["The Eiffel Tower is a wrought-iron lattice tower on the Champ de Mars in Paris, France."]],
+      ["Paris", ["Paris is the capital and most populous city of France."]]
+    ]
+  }
+]
