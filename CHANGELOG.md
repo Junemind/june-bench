@@ -4,6 +4,19 @@ All notable changes to the public `june-bench` harness. Versions are published t
 `bench-v*` tag (Trusted Publishing). The harness core stays stdlib-only; heavy systems live behind
 extras.
 
+## 0.1.2 — 2026-07-29 · the OpenRouter-era audit
+
+A systematic sweep of every remaining OpenRouter-era assumption, after four instances shipped in
+0.1.0/0.1.1 and were each found by a live run instead of a test:
+
+- a key rejected by the endpoint (HTTP 401/403) now reads "the endpoint rejected this ACCESS KEY"
+  instead of the misleading "predates platform selection"
+- runs under 30 questions print a smoke-run caveat instead of a ✗ verdict against the n=100
+  baseline
+- the platform surface is now pinned by regression tests (native key envs per platform, no
+  vendor-prefixed id reaches a direct platform — incl. the h2h pinned default and all menus —
+  anthropic judge-id shape, auth-vs-capability distinction, tiny-n verdict)
+
 ## 0.1.1 — 2026-07-29 · platform-native model ids for reproduce-h2h
 
 The matched-h2h pinned model id is stored in its historical OpenRouter shape (`openai/gpt-4o`);
@@ -11,15 +24,6 @@ on a direct platform it reached the vendor verbatim and was rejected (HTTP 400 �
 platform-aware preflight before any spend). `reproduce-h2h` now translates the pinned id to the
 platform-native form (`gpt-4o`) on direct platforms; OpenRouter keeps the historical prefixed
 form. Workaround on 0.1.0: pass `--model gpt-4o` explicitly.
-
-Also from the same-day audit of every remaining OpenRouter-era assumption:
-
-- a key rejected by the endpoint (HTTP 401/403) now reads "the endpoint rejected this ACCESS KEY"
-  instead of the misleading "predates platform selection"
-- runs under 30 questions print a smoke-run caveat instead of a ✗ verdict against the n=100
-  baseline
-- the platform surface is now pinned by regression tests (native key envs per platform, no
-  vendor-prefixed id on direct platforms, judge id shape, auth-vs-capability, tiny-n verdict)
 
 ## 0.1.0 — 2026-07-27 · the serving-drift release
 
