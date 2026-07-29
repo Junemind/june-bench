@@ -46,6 +46,19 @@ _PLATFORM_LLM_BASE = {
 }
 
 _DEFAULT_MODEL = "openai/gpt-4o"                 # the matched row; Cognee can't affordably run Opus
+
+
+def _native_model_id(model: str, platform: str) -> str:
+    """OpenRouter ids are vendor-prefixed ('openai/gpt-4o'); direct platforms take the NATIVE id
+    ('gpt-4o'). Strip a known vendor prefix when the run is on a direct platform — without this the
+    pinned h2h default reaches OpenAI-direct as 'openai/gpt-4o' and 400s (found 2026-07-29, caught
+    by the preflight before any spend)."""
+    if platform != "openrouter" and "/" in model:
+        head, tail = model.split("/", 1)
+        if head in ("openai", "anthropic", "google", "openrouter") and tail:
+            return tail
+    return model
+
 # June's dense-lane embedder = the default for the matched run, so `reproduce-h2h` is one command with no
 # env var to export. This is a PUBLISHED benchmark parameter (README + fairness methodology), not the moat
 # — the cost-gated extraction/graph pipeline is — so naming it here is deliberate and moat-safe (bge is
@@ -431,6 +444,8 @@ def run_reproduce_h2h(args) -> int:  # noqa: ANN001
 
     access, llm, cot, limit = _resolve_inputs(args)
     model = getattr(args, "model", "") or _DEFAULT_MODEL
+    model = _native_model_id(
+        model, (os.environ.get("JUNE_BENCH_LLM_PLATFORM", "") or "openrouter").strip().lower())
     from june_bench.reproduce import _ask_ingest_batches
     _ask_ingest_batches(limit)   # big pool? offer to batch the upload (avoids the SQLite lock storm)
 

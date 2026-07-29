@@ -4,6 +4,14 @@ All notable changes to the public `june-bench` harness. Versions are published t
 `bench-v*` tag (Trusted Publishing). The harness core stays stdlib-only; heavy systems live behind
 extras.
 
+## 0.1.1 — 2026-07-29 · platform-native model ids for reproduce-h2h
+
+The matched-h2h pinned model id is stored in its historical OpenRouter shape (`openai/gpt-4o`);
+on a direct platform it reached the vendor verbatim and was rejected (HTTP 400 — caught by the
+platform-aware preflight before any spend). `reproduce-h2h` now translates the pinned id to the
+platform-native form (`gpt-4o`) on direct platforms; OpenRouter keeps the historical prefixed
+form. Workaround on 0.1.0: pass `--model gpt-4o` explicitly.
+
 ## 0.1.0 — 2026-07-27 · the serving-drift release
 
 The July 2026 investigation (see the repo's THEORY_05 write-up) found June's benchmark numbers
