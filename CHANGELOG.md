@@ -4,6 +4,51 @@ All notable changes to the public `june-bench` harness. Versions are published t
 `bench-v*` tag (Trusted Publishing). The harness core stays stdlib-only; heavy systems live behind
 extras.
 
+## 0.1.0 — 2026-07-27 · the serving-drift release
+
+The July 2026 investigation (see the repo's THEORY_05 write-up) found June's benchmark numbers
+tracking the *serving* of the answer model — an unpinned aggregator coin-flipping requests across
+providers whose behavior drifted — while every June component measured byte-identical. Measured on
+the same engine and questions: 45–55/100 right-per-asked via the aggregator vs 62–72/100 served
+direct, both model families. This release makes the serving platform a first-class, chosen,
+recorded experimental variable, and makes the scoreboard structurally unable to hide
+abstention-shaped regressions again.
+
+### Changed (read this — output semantics)
+- **`✓ reproduced` now gates on right-per-asked (`EM × coverage`) against the target's, on a
+  common denominator.** Selective EM alone printed `✓ reproduced` over a 27% real regression six
+  times during the investigation; it can't anymore. `_MODEL_TARGETS` entries now carry
+  `(EM, F1, COVERAGE, serving-context)`.
+- Result blocks print coverage, right-per-asked, an honest-abstention note, and an `As-run:` stamp
+  (model · platform · endpoint · date). Every completed run also appends a machine-readable row to
+  `~/.cache/june-bench/results.jsonl`.
+- The h2h table adds `cover`, `right/asked`, `wrong`, and `refuse` columns for BOTH systems, with
+  worded-refusal detection applied by the harness to both systems' text identically (display-only;
+  scoring is unchanged and symmetric). A printed note states the contract difference: June answers
+  only what its evidence supports — it does not gamble; a system with no refusal channel is
+  force-guessing, and its `wrong` column includes the gambles that lost.
+
+### Added
+- **Platform selector** (`--platform` / `$JUNE_BENCH_LLM_PLATFORM` / interactive menu) on
+  `reproduce` and `reproduce-h2h`: OpenRouter (default) / OpenAI / Anthropic / Google, per-platform
+  key prompts and native model menus. Sent to the endpoint as an allowlisted `X-LLM-Platform`
+  ENUM (never a URL); guarded against endpoints that predate it; on h2h, Cognee's calls follow the
+  same platform (the matched contract, extended to serving). Checkpoints are keyed by platform.
+- **Per-platform cost metering**: OpenRouter credits (real-time, key-level); OpenAI/Anthropic org
+  cost APIs attempted when the key has admin scope (labeled as lagging); explicit user price sheet
+  (`JUNE_BENCH_PRICE_PER100Q`) as the honest fallback. Every printed dollar carries its provenance.
+- **OpenRouter caveat** printed whenever the aggregator is chosen, with the measured numbers.
+- Pool-ingest **server-side count verification** (a bloated endpoint once silently landed ~680 of
+  991 docs while the client printed "991 passages") and a backfill that loops until `done`
+  (a one-shot call once silently embedded 256 of 991).
+- `scripts/bench_canary.py` (daily drift canary: abstention-rate + ladder-depth alarms) and
+  `scripts/measure_compose_retry.sh` (the two-arm compose-tier measurement).
+
+### Targets
+- `claude-opus-4-8` (0.72 / 0.85 at 98% coverage — Anthropic direct, 2026-07-27, n=100 ×2).
+- `gpt-4o` (0.65 / 0.83 at 95% coverage — OpenAI direct, 2026-07-27, n=100 ×1, provisional).
+- Aggregator-era targets retained under their OpenRouter-prefixed ids as historical context.
+
 ## 0.0.31 — 2026-07-06
 
 ### Added — pre-run readiness gate ("box already hot" protection)

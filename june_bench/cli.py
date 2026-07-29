@@ -266,6 +266,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "anthropic/claude-opus-4-8 — June's pipeline runs end-to-end with YOUR model")
     rp.add_argument("--questions", type=int, default=0, help="how many (e.g. 5, 24, 100); else asked")
     rp.add_argument("--no-judge", dest="no_judge", action="store_true", help="skip the judged-correct column")
+    rp.add_argument("--platform", default="", choices=["", "openrouter", "openai", "anthropic", "google"],
+                    help="serving platform for the answer model (else menu / $JUNE_BENCH_LLM_PLATFORM); "
+                         "the platform is part of the experiment and is stamped on the result")
     rp.add_argument("--fresh", action="store_true",
                     help="ignore any saved checkpoint and start this run from scratch (it still saves a "
                          "new one, so a drop is resumable)")
@@ -288,6 +291,8 @@ def build_parser() -> argparse.ArgumentParser:
     rh.add_argument("--one-shot", dest="cot", action="store_false",
                     help="Cognee one-shot graph completion instead of chain-of-thought")
     rh.add_argument("--no-judge", dest="no_judge", action="store_true", help="skip the judged-correct column")
+    rh.add_argument("--platform", default="", choices=["", "openrouter", "openai", "anthropic", "google"],
+                    help="serving platform for BOTH systems' answers (else menu / $JUNE_BENCH_LLM_PLATFORM)")
     # Embedder for the fair comparison — three modes (else asked): default (Cognee's own), specify, discover.
     rh.add_argument("--embedder", default="",
                     help="mode 2: the embedder id June uses, matched to a local fastembed model "

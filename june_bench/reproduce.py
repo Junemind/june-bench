@@ -39,14 +39,110 @@ _HOW_LINE = ("open-pool retrieval (June finds its own evidence — no answers ha
 
 _RUN_SIZES = {"1": ("quick check", 5), "2": ("full headline", 100)}
 
-# Published open-pool targets per answer model (EM, F1). The caller brings any model (fully-open BYO);
-# for a model with no published baseline the run still works — it's just "June's pipeline + your model".
+# Published open-pool targets per answer model: (EM, F1, COVERAGE, serving-context).
+#
+# COVERAGE is part of the target, not a footnote. Both published numbers were measured over ALL
+# 100 questions (abstain_rate 0.0 in the source files, chat-2026-06-16-beat-cognee/head_to_head/
+# june_pool_100_*.json) — "0.63" means 63 correct of 100 ASKED. A later run that answers 72 and
+# gets 62% of those right is NOT a reproduction of it, and until 2026-07-27 this file said it was:
+# `_verdict` compared selective EM against an all-asked target, so a 27% real regression printed
+# "✓ reproduced" six separate times during the bench-abstention investigation.
+#
+# SERVING-CONTEXT is part of the target too. The July 2026 investigation traced that regression to
+# the serving of "openai/gpt-4o" itself drifting (provider mix + behavior — see
+# THEORY_05_the-model-id-is-not-the-model.md): the model id alone is an unpinned pointer, so a
+# target without "as served via WHOM, WHEN" is not a reproducibility claim. The string prints with
+# the verdict so every reader sees what the baseline actually was.
 _MODEL_TARGETS = {
-    "openai/gpt-4o": (0.63, 0.80),
-    "anthropic/claude-opus-4-8": (0.76, 0.89),
+    "openai/gpt-4o": (0.63, 0.80, 1.00, "as served via OpenRouter (OpenAI/Azure mix), 2026-06-16"),
+    "anthropic/claude-opus-4-8": (0.76, 0.89, 1.00, "as served via OpenRouter, 2026-06-16"),
+    # The post-drift re-baseline (2026-07-27): the new stack (uncapped FTS5+hnsw lanes) on the
+    # DIRECT Anthropic API at temp 1.0 — measured twice at n=100 (second run uninterrupted):
+    # EM 0.73/0.72 · F1 0.86/0.85 · coverage 0.98 both · right-per-asked 0.72/0.71. The
+    # conservative member of the band is recorded. Platform-NATIVE id (Anthropic direct); the
+    # OpenRouter-prefixed entry above is the pre-drift aggregator-era number, kept for history.
+    "claude-opus-4-8": (0.72, 0.85, 0.98,
+                        "as served by Anthropic DIRECT, 2026-07-27 · new stack · temp 1.0 · n=100 ×2"),
+    # Same day, same engine, OpenAI direct: the alias that refuses 21-28/100 through the
+    # aggregator refuses 5/100 served direct — and lands back at the June-16-era number
+    # (0.62 right-per-asked vs the original 0.63 all-asked target). Single run; provisional
+    # until repeated.
+    "gpt-4o": (0.65, 0.83, 0.95,
+               "as served by OpenAI DIRECT, 2026-07-27 · new stack · temp 0 · n=100 ×1 (provisional)"),
 }
-_MODEL_MENU = {"1": "openai/gpt-4o", "2": "anthropic/claude-opus-4-8"}
 _DEFAULT_MODEL = "openai/gpt-4o"
+
+# ── BYO-PLATFORM (July 2026): the serving platform is part of the experiment ─────────────────
+# The serving-drift incident (THEORY_05_the-model-id-is-not-the-model.md) proved a model id alone
+# is an unpinned pointer: "openai/gpt-4o" via OpenRouter was silently served by two providers whose
+# behavior drifted. Letting the caller CHOOSE the platform — and stamping it on the result — turns
+# that hidden variable into a controlled one. The client sends an ENUM (X-LLM-Platform), never a
+# URL; the endpoint maps it to an allowlist. "openrouter" = the endpoint default (no header sent →
+# byte-identical legacy behaviour). Non-default platforms are GUARDED: refused against endpoints
+# that don't advertise `llm_platforms` in /v1/answer/health, because an Anthropic key fired at the
+# default OpenRouter URL is 100 paid auth-error rows.
+
+# The OpenRouter caveat — printed whenever the aggregator is chosen, because the July 2026
+# investigation measured exactly what it costs June. An aggregator routes each request to
+# whichever provider it picks; the mix and the serving builds change without notice, and none of
+# it is pinnable or visible in the result. June answers only what its evidence supports and
+# refuses the rest — so when aggregator serving drifts conservative, June's refusals rise while
+# guess-style systems (no refusal channel) hide the same drift inside silently-changed guesses.
+# Measured on identical engine + questions (2026-07-27): 45-55/100 right-per-asked through
+# OpenRouter vs 62-72/100 served direct, both model families.
+_OPENROUTER_CAVEAT = (
+    "  ⚠ OpenRouter note: an aggregator serves each request from an unpinned, changing provider\n"
+    "    mix. June answers only what its evidence supports — it does not gamble — so aggregator\n"
+    "    serving drift shows up as honest refusals (measured 2026-07: 45-55/100 via OpenRouter vs\n"
+    "    62-72/100 served direct, same engine, same questions, both model families). Fine for\n"
+    "    one-key convenience + real-time cost metering; for accuracy-representative or publishable\n"
+    "    numbers, pick a DIRECT platform — the result stamps whichever you choose.")
+
+_PLATFORM_MENU = {
+    "1": ("openrouter", "OpenRouter (default — aggregator; provider mix is OpenRouter's choice)",
+          "https://openrouter.ai/keys"),
+    "2": ("openai", "OpenAI direct", "https://platform.openai.com/api-keys"),
+    "3": ("anthropic", "Anthropic direct", "https://console.anthropic.com"),
+    "4": ("google", "Google AI direct", "https://aistudio.google.com/apikey"),
+}
+# Platform-NATIVE model ids (OpenRouter ids carry a vendor prefix; direct APIs do not). Targets in
+# _MODEL_TARGETS are keyed by the id as sent, so only ids listed there show a published baseline.
+_PLATFORM_MODELS = {
+    "openrouter": [("openai/gpt-4o", "published ~0.63 EM"),
+                   ("anthropic/claude-opus-4-8", "published ~0.76 EM")],
+    "openai":     [("gpt-4o", "alias — FLOATS with vendor serving"),
+                   ("gpt-4o-2024-05-13", "pinned snapshot")],
+    "anthropic":  [("claude-opus-4-8", "the matched-Opus H2H design"),
+                   ("claude-sonnet-4-5", "cheaper tier")],
+    "google":     [("gemini-2.5-flash", "fast/cheap tier")],
+}
+# Judge follows the platform (same key, that platform's cheap tier) so a non-OpenRouter run never
+# fires its key at OpenRouter. Judged scores stay comparable only WITHIN a platform — printed.
+# Platform → native key env(s): consulted flag → JUNE_BENCH_LLM_KEY → these — so a
+# non-interactive `--platform anthropic` run with ANTHROPIC_API_KEY set just works
+# (2026-07-29 box re-baseline stalled 2h on this: the guard only knew OPENROUTER_API_KEY).
+_PLATFORM_KEY_ENVS = {
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+}
+
+
+def _platform_env_key(platform):
+    for e in _PLATFORM_KEY_ENVS.get(platform, ()):
+        v = os.environ.get(e, "")
+        if v:
+            return v
+    return ""
+
+
+_PLATFORM_JUDGE = {
+    "openai": ("https://api.openai.com/v1/chat/completions", "gpt-4o-mini"),
+    "anthropic": ("https://api.anthropic.com/v1/chat/completions", "claude-sonnet-4-5"),
+    "google": ("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+               "gemini-2.5-flash"),
+}
 
 
 class _BundledHotpot:
@@ -130,23 +226,49 @@ def _resolve_inputs(args) -> tuple[str, str, str, int, str]:  # noqa: ANN001
 
     access = (getattr(args, "key", "") or os.environ.get("JUNE_BENCH_JUNE_KEY", "")
               or _ask("1) Access key from Junemind:\n   > "))
+
+    # PLATFORM before key: the key prompt depends on where the answers will be served.
+    platform = ((getattr(args, "platform", "") or "")
+                or os.environ.get("JUNE_BENCH_LLM_PLATFORM", "")).strip().lower()
+    if not platform and _is_tty():
+        print("\n2) Which platform serves the answer model?  (the platform is part of the "
+              "experiment — it is stamped on the result)")
+        for k, (_pid, label, _keys) in sorted(_PLATFORM_MENU.items()):
+            print(f"   [{k}] {label}")
+        pc = _ask("   > ", default="1") or "1"
+        platform = _PLATFORM_MENU.get(pc, _PLATFORM_MENU["1"])[0]
+    platform = platform or "openrouter"
+    if platform not in {p for p, _l, _k in _PLATFORM_MENU.values()}:
+        print(f"\nUnknown platform {platform!r} — supported: "
+              f"{sorted(p for p, _l, _k in _PLATFORM_MENU.values())}", file=sys.stderr)
+        raise SystemExit(2)
+    os.environ["JUNE_BENCH_LLM_PLATFORM"] = platform
+    if platform == "openrouter":
+        print(_OPENROUTER_CAVEAT)
+    _plabel = next(l for p, l, _k in _PLATFORM_MENU.values() if p == platform)
+    _pkeys = next(k for p, _l, k in _PLATFORM_MENU.values() if p == platform)
+
     llm = (getattr(args, "llm_key", "") or os.environ.get("JUNE_BENCH_LLM_KEY", "")
-           or os.environ.get("OPENROUTER_API_KEY", "")
-           or _ask("2) Your OpenRouter API key  (generates the answers — you pay ~$1 for a full run;\n"
-                   "   get one at https://openrouter.ai/keys):\n   > ", secret=True))
+           or _platform_env_key(platform)
+           or _ask(f"   Your {_plabel.split(' (')[0]} API key  (generates the answers — you pay; "
+                   f"get one at {_pkeys}):\n   > ", secret=True))
 
     # 3) MODEL — fully-open BYO: June's pipeline runs with the model you pick (any OpenRouter id).
     model = getattr(args, "model", "") or os.environ.get("JUNE_BENCH_LLM_MODEL", "")
     if not model:
+        menu = _PLATFORM_MODELS.get(platform, _PLATFORM_MODELS["openrouter"])
         if _is_tty():
             print("\n3) Which answer model?  (June's retrieval + reasoning · YOUR model, end-to-end)")
-            print("   [1] openai/gpt-4o             (published ~0.63 EM)")
-            print("   [2] anthropic/claude-opus-4-8 (published ~0.76 EM)")
-            print("   [3] other — any OpenRouter model id")
+            for i, (mid, note) in enumerate(menu, 1):
+                print(f"   [{i}] {mid:29} ({note})")
+            print(f"   [{len(menu) + 1}] other — any {_plabel.split(' (')[0]} model id")
             mc = _ask("   > ", default="1") or "1"
-            model = _MODEL_MENU.get(mc) or (_ask("   model id: ") if mc == "3" else _DEFAULT_MODEL)
+            if mc.isdigit() and 1 <= int(mc) <= len(menu):
+                model = menu[int(mc) - 1][0]
+            else:
+                model = _ask("   model id: ") or menu[0][0]
         else:
-            model = _DEFAULT_MODEL
+            model = menu[0][0]
     model = model or _DEFAULT_MODEL
 
     limit = getattr(args, "questions", 0) or 0
@@ -170,8 +292,9 @@ def _resolve_inputs(args) -> tuple[str, str, str, int, str]:  # noqa: ANN001
             size_label, limit = _RUN_SIZES["2"]   # non-interactive default = full headline (100)
 
     if not access or not llm:
-        print("\nNeed both an access key and an OpenRouter key. Re-run and provide them, or pass "
-              "--key / --llm-key (or set JUNE_BENCH_JUNE_KEY / OPENROUTER_API_KEY).", file=sys.stderr)
+        _envs = " / ".join(_PLATFORM_KEY_ENVS.get(platform, ("OPENROUTER_API_KEY",)))
+        print(f"\nNeed both an access key and a {platform} API key. Re-run and provide them, or pass "
+              f"--key / --llm-key (or set JUNE_BENCH_JUNE_KEY / {_envs}).", file=sys.stderr)
         raise SystemExit(2)
     return access, llm, model, int(limit), size_label
 
@@ -185,6 +308,17 @@ def _apply_env(access: str, llm: str, model: str) -> None:
     os.environ["JUNE_BENCH_JUNE_BACKFILL"] = "1"    # embed the pool so the dense lane has vectors
     os.environ["JUNE_BENCH_LLM_KEY"] = llm          # BYO — the caller pays for answer synthesis
     os.environ["JUNE_BENCH_LLM_MODEL"] = model      # BYO model → X-LLM-Model (synth + reasoner)
+    # Judge follows the platform: a non-OpenRouter key must never be fired at OpenRouter's judge
+    # URL (that was 100 paid auth-errors waiting to happen). Same key, that platform's cheap tier.
+    platform = (os.environ.get("JUNE_BENCH_LLM_PLATFORM", "") or "openrouter").strip().lower()
+    if platform in _PLATFORM_JUDGE:
+        j_url, j_model = _PLATFORM_JUDGE[platform]
+        os.environ.setdefault("JUNE_JUDGE_LLM_URL", j_url)
+        os.environ.setdefault("JUNE_JUDGE_LLM_MODEL", j_model)
+        print(f"  · judge: {j_model} on {platform} — judged-correct is comparable WITHIN a "
+              "platform, not across platforms (the judge model differs)")
+        print("  · cost note: metered cost is OpenRouter-specific; off-OpenRouter runs are "
+              "not metered (use token counts × the vendor's price sheet)")
     os.environ.setdefault("JUNE_JUDGE_LLM_URL", PRESET["judge_url"])
     # Judge stays a FIXED model (not the answer model) so judged scores are comparable ACROSS answer
     # models and there's no self-judging bias.
@@ -219,6 +353,24 @@ def run_reproduce(args) -> int:  # noqa: ANN001
     _ask_ingest_batches(limit)   # big open-pool? offer to batch the upload (avoids the SQLite lock storm)
     _apply_env(access, llm, model)
 
+    # PLATFORM CAPABILITY GUARD: a non-default platform against an endpoint that predates
+    # X-LLM-Platform means the endpoint fires this key at its DEFAULT URL — e.g. an Anthropic key
+    # at OpenRouter: ~100 paid auth-error rows and a run that measured nothing. The endpoint
+    # advertises support via `llm_platforms` in /v1/answer/health; absent ⇒ refuse, loudly, BEFORE
+    # any money moves. JUNE_BENCH_ASSUME_PLATFORM_OK=1 overrides (e.g. a dev endpoint without the
+    # health field) — an explicit, recorded risk, never a silent one.
+    _platform = (os.environ.get("JUNE_BENCH_LLM_PLATFORM", "") or "openrouter").strip().lower()
+    if _platform != "openrouter" and os.environ.get(
+            "JUNE_BENCH_ASSUME_PLATFORM_OK", "").strip() != "1":
+        _cfg = _health(os.environ.get("JUNE_BENCH_JUNE_URL", ""), access)
+        _plats = _cfg.get("llm_platforms") or []
+        if _platform not in [str(p).lower() for p in _plats]:
+            print(f"\n✗ This endpoint does not support platform {_platform!r} "
+                  f"(it advertises: {_plats or 'none — it predates platform selection'}).\n"
+                  "  Choose OpenRouter, point at an upgraded endpoint, or set "
+                  "JUNE_BENCH_ASSUME_PLATFORM_OK=1 to override at your own cost.", file=sys.stderr)
+            raise SystemExit(2)
+
     # No download: the exact 100-question slice ships INSIDE the package (offline-safe, byte-identical
     # to the parity run). This is what makes reproduction work for anyone, on any network.
     system = systems.get(PRESET["system"])
@@ -235,6 +387,13 @@ def run_reproduce(args) -> int:  # noqa: ANN001
     # resumes without re-paying. Keyed by dataset + answer model + size. Disable: JUNE_BENCH_NO_CHECKPOINT.
     import pathlib
     _slug = "".join(c if c.isalnum() else "-" for c in model) or "model"
+    # PLATFORM is part of the checkpoint key (July 2026): the same native model id served by two
+    # platforms is two different experiments, and a resume that silently mixed them would corrupt
+    # the run. OpenRouter keeps the historical name (old checkpoints keep resuming); direct
+    # platforms get their own files.
+    _plat_ck = (os.environ.get("JUNE_BENCH_LLM_PLATFORM", "") or "openrouter").strip().lower()
+    if _plat_ck != "openrouter":
+        _slug = f"{_plat_ck}-{_slug}"
     _ckpt = None if os.environ.get("JUNE_BENCH_NO_CHECKPOINT") else str(
         pathlib.Path(os.environ.get("JUNE_BENCH_CHECKPOINT_DIR",
                      str(pathlib.Path.home() / ".cache" / "june-bench" / "checkpoints")))
@@ -263,13 +422,30 @@ def run_reproduce(args) -> int:  # noqa: ANN001
     return 0
 
 
-def _verdict(em: float, target_em: float | None) -> str:
-    if target_em is None:                       # no published baseline for this model — still valid
+def _verdict(em: float, cov: float, target: tuple | None) -> str:
+    """Pass/fail against the published baseline, on a COMMON denominator.
+
+    Compares right-per-asked (selective EM × coverage) against the target's right-per-asked
+    (target EM × target coverage). This is the single change that would have caught the July 2026
+    regression on its first run: selective EM is mathematically insensitive to abstention — a run
+    that refuses half the set and nails the rest scores HIGHER selectively while answering fewer
+    questions correctly. Gating on em×coverage makes abstention cost what it costs.
+
+    A materially-below-target coverage is called out even when the product is close: the same
+    right-per-asked at 70% coverage is a different system than at 100%, and the reader deciding
+    whether to trust June should know which one they measured."""
+    if target is None:                          # no published baseline for this model — still valid
         return "(no published baseline for this model — June's pipeline + your model)"
-    if em >= target_em - 0.05:
+    t_em, _t_f1, t_cov = target[0], target[1], (target[2] if len(target) > 2 else 1.0)
+    real, t_real = em * cov, t_em * t_cov
+    if real >= t_real - 0.05:
+        if cov < t_cov - 0.10:
+            return (f"~ accuracy holds but coverage is {cov:.0%} vs the baseline's {t_cov:.0%} — "
+                    "same score, different system; investigate the abstentions")
         return "✓ reproduced"
-    if em >= 0.45:
-        return "~ close (within noise / smaller sample)"
+    if real >= 0.40:
+        return (f"✗ NOT reproduced on a common denominator: {real:.2f} right-per-asked vs the "
+                f"baseline's {t_real:.2f} (selective EM {em:.2f} at {cov:.0%} coverage)")
     return "✗ off — see the troubleshooting note below"
 
 
@@ -280,13 +456,60 @@ def _print_result(summary: dict, judged, model: str, args) -> None:  # noqa: ANN
     line = "─" * 58
     print("\n" + line)
     print(f"  Model:   {model}")
+    # EM/F1 are SELECTIVE — averaged over answered items only (see score.score's docstring:
+    # "paired with coverage, so abstaining trades coverage for accuracy in a measured way").
+    # That pairing was computed and then not printed, so a run answering 51 of 100 and one
+    # answering 100 of 100 both showed a bare "EM 0.61" and looked comparable. Measured
+    # 2026-07-27: June abstained on 49/100 of the open-pool HotpotQA slice while the headline
+    # moved five points. Coverage is not a footnote to these numbers, it is half of them.
+    total = summary.get("n", n)
+    abst = summary.get("abstained", max(0, total - n))
+    cov = summary.get("coverage", (n / total) if total else 0.0)
     print(f"  Result:  EM {em:.2f} · F1 {f1:.2f}"
           + (f" · judged-correct {judged:.0%}" if judged is not None else "")
-          + f"   (n={n})")
+          + f"   (over {n} ANSWERED of {total})")
+    print(f"  Coverage: {cov:.0%} — abstained on {abst}/{total}"
+          + (f"   ⚠ EM/F1 are over the {n} it chose to answer" if abst else ""))
+    if abst:
+        print("           abstentions are honest refusals — June answers only what its evidence "
+              "supports; it does not gamble")
+    if total:
+        print(f"  Answered-and-correct: {em * n / total:.2f} of every question asked")
     if target:
-        print(f"  Target:  ~{target[0]:.2f} / ~{target[1]:.2f}   {_verdict(em, target[0])}")
+        t_cov = target[2] if len(target) > 2 else 1.0
+        serving = target[3] if len(target) > 3 else "serving context unrecorded"
+        print(f"  Target:  ~{target[0]:.2f} / ~{target[1]:.2f} at {t_cov:.0%} coverage ({serving})")
+        print(f"  Verdict: {_verdict(em, cov, target)}")
     else:
-        print(f"  Target:  {_verdict(em, None)}")
+        print(f"  Target:  {_verdict(em, cov, None)}")
+    # The model id is a pointer, not a model (THEORY_05): stamp what this run actually used, so the
+    # row stays interpretable after the serving world moves again — AND persist the same stamp as a
+    # machine-readable ledger row (~/.cache/june-bench/results.jsonl): stdout scrolls away, but the
+    # re-baseline, the canary, and the site all need these rows later. Append-only, best-effort.
+    import datetime as _dt
+    try:
+        import json as _json
+        import pathlib as _pl
+        _row = {"ts": _dt.datetime.now().isoformat(timespec="seconds"), "model": model,
+                "platform": (os.environ.get("JUNE_BENCH_LLM_PLATFORM", "") or "openrouter").lower(),
+                "endpoint": os.environ.get("JUNE_BENCH_JUNE_URL", ""), "n": total,
+                "answered": n, "abstained": abst, "coverage": cov,
+                "em_selective": round(em, 4), "f1_selective": round(f1, 4),
+                "right_per_asked": round(em * n / total, 4) if total else 0.0,
+                "judged": (round(judged, 4) if judged is not None else None)}
+        _led = _pl.Path(os.environ.get("JUNE_BENCH_RESULTS_LEDGER",
+                        str(_pl.Path.home() / ".cache" / "june-bench" / "results.jsonl")))
+        _led.parent.mkdir(parents=True, exist_ok=True)
+        with open(_led, "a") as _f:
+            _f.write(_json.dumps(_row) + "\n")
+    except Exception:  # noqa: BLE001 — the ledger is an accessory, never load-bearing
+        pass
+    _plat = (os.environ.get("JUNE_BENCH_LLM_PLATFORM", "") or "openrouter").strip().lower()
+    _prov = ("provider per OpenRouter routing (UNPINNED — direct-served runs measured "
+             "10-17 pts higher, 2026-07)" if _plat == "openrouter"
+             else f"served by {_plat} (direct)")
+    print(f"  As-run:  {model} · platform={_plat} · endpoint "
+          f"{os.environ.get('JUNE_BENCH_JUNE_URL', '?')} · {_dt.date.today().isoformat()} · {_prov}")
     print(f"  How:     {_HOW_LINE}")
     print(line)
 

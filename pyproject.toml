@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "june-bench"
-version = "0.0.32"
+version = "0.1.0"
 description = "Reproducible benchmark suite for memory/QA systems — June + pluggable competitors."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,7 +24,7 @@ classifiers = [
 ]
 # The harness core is stdlib-only, so the base install pulls nothing and runs the bundled `smoke`
 # dataset offline. Heavy systems live behind extras.
-dependencies = []
+dependencies = ["httpx>=0.27"]  # probe_config + judge + REST client import it unconditionally (found missing on the 2026-07-29 box run)
 
 [project.urls]
 Homepage = "https://june.januraine.ai"

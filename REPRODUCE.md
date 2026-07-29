@@ -4,8 +4,8 @@ Run the exact benchmark behind June's published open-pool headline **on your own
 hosted June endpoint, in four commands. You bring your own LLM key (you pay only for answer synthesis;
 June's retrieval + graph run on the endpoint). No June source, no models, no Docker on your side.
 
-**Published target (open-pool, n=100):** EM ≈ 0.63 · F1 ≈ 0.80
-Independently reproduced on AWS at **EM 0.6512 / F1 0.8164**.
+**Published target (open-pool, n=100, `claude-opus-4-8` served Anthropic-direct):** EM 0.72–0.75 · F1 0.85–0.88 at 97–98% coverage — answered-and-correct ≈ **0.73**
+*Re-baselined 2026-07-27 (local, ×2) and independently re-verified on the hosted endpoint 2026-07-29: **EM 0.75 · F1 0.88 · judged-correct 90% at 97% coverage**. The pre-drift aggregator-era target (EM ≈ 0.63 via OpenRouter, no coverage column) is retired — see “Serving platform matters” below. `gpt-4o` OpenAI-direct: provisional 0.65 / 0.83 at 95%.*
 
 ---
 
@@ -16,11 +16,15 @@ pip install "june-bench[june-api]"
 june-bench reproduce
 ```
 
-It asks you three things in plain English — the access key you were given, your own OpenRouter key
-(you pay ~$1 for a full run; get one at https://openrouter.ai/keys), and how much to run — then runs
-it with a live progress bar and prints the score with a ✓/✗ verdict. The dataset ships **inside** the
-package, so there's **no download** — it works offline / behind a firewall. You never touch a config
-variable. Non-interactive/CI: `june-bench reproduce --key … --llm-key … --questions 100`.
+It asks you four things in plain English — the access key you were given, **which platform serves
+the answer model** (OpenRouter, or OpenAI / Anthropic / Google direct — see "Serving platform
+matters" below; the choice is stamped on the result), the matching API key (you pay ~$1 for a full
+run), and how much to run — then runs it with a live progress bar and prints the score with a ✓/✗
+verdict. The judge automatically follows your platform (same key, that platform's cheap tier). The
+dataset ships **inside** the package, so there's **no download** — it works offline / behind a
+firewall. You never touch a config variable.
+Non-interactive/CI: `june-bench reproduce --key … --llm-key … --platform anthropic --model
+claude-opus-4-8 --questions 100`.
 
 Prefer to see and control every setting yourself? The manual path is below.
 
@@ -127,11 +131,16 @@ export JUNE_BENCH_JUNE_KEY=<bench-api-key>                    # request one at a
 export JUNE_BENCH_JUNE_POOL=1 JUNE_BENCH_JUNE_BACKFILL=1  # open-pool + embed the pool
 
 # Bring your OWN LLM key — you pay for answer synthesis (and the judge), not the host.
-export JUNE_BENCH_LLM_KEY=<your-openrouter-key>
-export JUNE_JUDGE_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-export JUNE_JUDGE_LLM_MODEL=openai/gpt-4o
-export JUNE_JUDGE_LLM_KEY=<your-openrouter-key>
+export JUNE_BENCH_LLM_KEY=<your-llm-key>
+# Optional: which platform serves the answers (default openrouter — see the caveat below).
+# Direct platforms need an endpoint that advertises support (the harness guards this for you).
+export JUNE_BENCH_LLM_PLATFORM=openrouter        # or: openai · anthropic · google
+export JUNE_JUDGE_LLM_URL=https://openrouter.ai/api/v1/chat/completions   # judge (or let the
+export JUNE_JUDGE_LLM_MODEL=openai/gpt-4o                                 # platform menu set it)
+export JUNE_JUDGE_LLM_KEY=<your-llm-key>
 ```
+
+These env vars drive `june-bench suite` runs too — the platform selector isn't menu-only.
 
 ## 4 · Run
 
@@ -159,22 +168,37 @@ time). `--limit 24` is a faster, still-comparable middle ground.
 
 ## Reading the result
 
-The result footnote records exactly what ran — for a valid reproduction it must read:
+The result footnote records exactly what ran — for a valid reproduction against the hosted
+endpoint's published configuration it must read (BYO runs show the host's *startup* synthesizer
+here; the `As-run:` stamp is the line that records what actually answered):
 
 ```
 mode=pool(open-pool·retrieves) · backfill=on · answerer=llm:openai/gpt-4o
 · max_sources=12 · max_tokens=64 · reason=grounded:...·hops=4 · dense=on
 ```
 
-- **EM ≈ 0.63–0.65 / F1 ≈ 0.80** → reproduced. ✅
+Since 0.1.0 the result block also prints **coverage** (how many of the asked questions June chose
+to answer — its abstentions are honest refusals, never gambles), **answered-and-correct per question
+asked**, and an **`As-run:` stamp** (model · platform · endpoint · date). The ✓/✗ **verdict gates on
+right-per-asked (`EM × coverage`) against the target's own coverage** — a run that answers fewer
+questions can no longer print `✓ reproduced` on selective EM alone. Every completed run also appends
+a machine-readable row to `~/.cache/june-bench/results.jsonl`.
+
+- **right-per-asked within ~0.05 of the target at comparable coverage** → reproduced. ✅
+- **selective EM fine but coverage well below the target's** → the verdict says so explicitly:
+  same score, different system — investigate the abstentions (start with the serving platform).
 - **EM ≈ 0.32** → the dense lane didn't engage (embedder shows `none`; tell the host).
 - **EM ≈ 0** → the answerer fell to the extractive floor (your `JUNE_BENCH_LLM_KEY` didn't reach the
   model — check the key/model).
 
 `--limit N` runs the first N of the same fixed 100-question slice, so any N is internally comparable.
-Swap `--model` and your keys to `anthropic/claude-opus-4-8` (temperature 1.0) to target the Opus
-number (~0.76). Everything is the same identical EM/F1 scorer June scores itself with — see
-`june_bench/score.py` and the `test_sb1_parity.py` gate.
+Targets are **per model AND per serving platform** (each `_MODEL_TARGETS` entry records the EM, F1,
+coverage, and serving context it was measured at): `anthropic/claude-opus-4-8` via OpenRouter carries
+the aggregator-era ~0.76; **`claude-opus-4-8` served Anthropic-direct carries the 2026-07-27
+re-baseline (0.72 / 0.85 at 98% coverage, temperature 1.0) — re-verified against the hosted
+endpoint on 2026-07-29 at 0.75 / 0.88 / judged 90% at 97% coverage (✓ reproduced)**, and `gpt-4o`
+OpenAI-direct carries a provisional 0.65 / 0.83 at 95%. Everything is the same identical EM/F1 scorer June scores itself
+with — see `june_bench/score.py` and the `test_sb1_parity.py` gate.
 
 ---
 
@@ -184,3 +208,26 @@ Point `JUNE_BENCH_JUNE_URL` at any June endpoint that has the dense lane + reaso
 (see June's deployment docs). The harness ships **no June
 source** — it speaks only the documented `/v1/answer`, `/v1/ingest/text`, `/v1/canvases` HTTP
 contract, so the same commands work against localhost or any host.
+
+## Serving platform matters (measured, July 2026)
+
+The answer model's **serving platform is part of the experiment**, and June is the system honest
+enough to show it. June answers only what its evidence supports and refuses the rest — it does not
+gamble. An aggregator (OpenRouter) routes each request to an unpinned, changing provider mix, and
+when that serving drifts conservative, June's honest refusals rise; guess-style systems have no
+refusal channel, so the same drift hides inside silently-changed guesses instead.
+
+Measured on an identical engine and identical questions (2026-07-27):
+
+| serving | gpt-4o | claude-opus-4-8 |
+|---|---|---|
+| via OpenRouter (aggregator) | 45–49 / 100 right-per-asked | 55 / 100 |
+| served DIRECT (vendor API)  | **62 / 100** | **71–72 / 100** |
+
+The hosted endpoint was rebuilt to this direct-platform shape on 2026-07-29 and re-measured at
+**73 / 100 right-per-asked** (EM 0.75 at 97% coverage) — the endpoint now serves, and scores as,
+the same June measured locally.
+
+Use OpenRouter for one-key convenience and real-time cost metering. For accuracy-representative
+or publishable numbers, choose a **direct platform** in the menu — every result stamps the
+platform it ran on (`As-run:`), so numbers from different serving paths are never conflated.

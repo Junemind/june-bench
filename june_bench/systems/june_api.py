@@ -54,7 +54,7 @@ class JuneApiSystem:
                  canvas_path: str = "/v1/canvases", timeout: float = 30.0, transport=None,
                  params: dict | None = None, isolate: bool = True, backfill: bool = False,
                  cleanup: bool = False, llm_key: str = "", llm_model: str = "", record: bool = False,
-                 pooled: bool = False) -> None:  # noqa: ANN001
+                 pooled: bool = False, llm_platform: str = "") -> None:  # noqa: ANN001
         if not base_url:
             raise ValueError("JuneApiSystem needs a base_url (e.g. http://localhost:8000). "
                              "Set JUNE_BENCH_JUNE_URL or pass base_url=…")
@@ -74,6 +74,12 @@ class JuneApiSystem:
         # Empty ⇒ the endpoint's default model.
         if llm_model:
             headers["X-LLM-Model"] = llm_model
+        # BYO-platform: an allowlisted ENUM the endpoint maps to a serving URL (never a URL from
+        # here — SSRF). "openrouter" is the endpoint default, so it is NOT sent: old endpoints that
+        # predate the header then behave byte-identically, and the run_reproduce guard refuses
+        # non-default platforms against endpoints that don't advertise support.
+        if llm_platform and llm_platform.strip().lower() != "openrouter":
+            headers["X-LLM-Platform"] = llm_platform.strip().lower()
         self._answer_path = answer_path
         self._ingest_path = ingest_path
         self._docs_path = docs_path
@@ -192,16 +198,43 @@ class JuneApiSystem:
                               "ingest (slower; may lock on a large pool).\n")
             return await self._ingest_docs([it["text"] for it in items], headers)
 
-    async def _maybe_backfill(self, headers: dict) -> None:
+    async def _maybe_backfill(self, headers: dict) -> dict:
         """Embed the just-ingested content (within this question's canvas) so the dense lane has
-        vectors. Fail-soft: a model-free endpoint returns 4xx ('no embedder configured') — that's
-        expected when no dense lane is wired, so we ignore non-2xx rather than failing the answer."""
+        vectors — LOOPING until the endpoint reports ``done`` (Defect A, found 2026-07-26).
+
+        This used to be a single bodiless POST. When the backfill route later grew a ``max_nodes``
+        body (default 256), that one call silently embedded 256 of a 991-doc pool — dense and FTS
+        then ran over ~26% of the corpus with no error anywhere, and the model honestly refused the
+        rest. The desktop app already looped (main.js: ``{max_nodes:128}`` until ``r.done``); only
+        this client fired once. Endpoints predating the field ignore the body and return no
+        ``done`` → exactly one call, byte-identical to the old behaviour.
+
+        Fail-soft on transport errors and 4xx (a model-free endpoint has no embedder — expected;
+        the answer proceeds on graph+lexical). But a pool that will not CONVERGE is reported
+        loudly: silent partial coverage is precisely how this bug hid for a day."""
+        acc: dict = {"embedded": 0, "last": {}}
         if not self._backfill:
-            return
+            return acc
         try:
-            await self._client.post(self._backfill_path, json={}, headers=headers)
+            for _ in range(64):        # 64×1000 nodes ≫ any bench pool — a runaway bound, not a budget
+                r = await self._client.post(self._backfill_path, json={"max_nodes": 1000},
+                                            headers=headers)
+                if r.status_code >= 400:               # 'no embedder configured' → dense lane not wired
+                    return acc
+                body = r.json() if r.content else {}
+                acc["last"] = body
+                try:
+                    acc["embedded"] += int(body.get("embedded", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+                if body.get("done", True):             # old route has no `done` → single-shot, complete
+                    return acc
+            import sys as _sys
+            _sys.stderr.write("[june-bench] WARNING: embeddings backfill did not converge after 64 "
+                              "rounds — the dense lane may cover only part of the pool.\n")
         except Exception:  # noqa: BLE001 — best-effort; the answer still proceeds on graph+lexical
             pass
+        return acc
 
     async def ingest_pool(self, examples: Sequence["Example"]) -> int:  # noqa: F821
         """OPEN-POOL setup (the local `--retrieval pool` analogue): ingest the deduped UNION of every
@@ -234,7 +267,22 @@ class JuneApiSystem:
             import math
             batches = max(1, math.ceil(len(docs) / 500))
         n = await self._ingest_pool_docs(docs, headers, batches)
-        await self._maybe_backfill(headers)            # embed the whole pool → dense lane has vectors
+        bf = await self._maybe_backfill(headers)       # embed the whole pool → dense lane has vectors
+        # INGEST VERIFICATION (July 2026): the client's "N passages" print is a claim about what it
+        # SENT, not what LANDED. Runs on a bloated endpoint silently landed ~680 of 991 (fossil
+        # record in the residue DB) and nothing anywhere said so. The backfill counters are a
+        # server-side census of the same freshly-created canvas: fully embedded ⇒ embedded ≈ docs.
+        # A shortfall means the questions will run over a pool the harness did not upload — say so
+        # loudly BEFORE money is spent answering over it. (Endpoints without counters report 0 →
+        # check skipped, behaviour unchanged.)
+        server_n = int(bf.get("embedded") or 0)
+        if server_n and n and server_n < n * 0.98:
+            import sys as _sys
+            _sys.stderr.write(
+                f"[june-bench] ⚠ SILENT PARTIAL INGEST: sent {n} pool docs but the endpoint "
+                f"embedded only {server_n} — retrieval will run over an incomplete pool and "
+                f"refusals/misses will NOT be June's fault. Wipe/compact the endpoint DB and "
+                f"re-run before trusting this run's numbers.\n")
         self._pool_ready = True                        # (_pool_canvas already registered above)
         return n
 
@@ -460,9 +508,12 @@ def from_env() -> JuneApiSystem:
     # BYO-model: the answer/reasoning model the endpoint should use for THIS run (X-LLM-Model). Empty ⇒
     # the endpoint's default. Lets a benchmarker reproduce any model's number against one endpoint.
     llm_model = os.environ.get("JUNE_BENCH_LLM_MODEL", "")
+    # BYO-platform enum (openrouter/openai/anthropic/google) — see __init__; default = endpoint's.
+    llm_platform = os.environ.get("JUNE_BENCH_LLM_PLATFORM", "")
     return JuneApiSystem(url, api_key=os.environ.get("JUNE_BENCH_JUNE_KEY", ""),
                          backfill=backfill, cleanup=cleanup, timeout=timeout, llm_key=llm_key,
-                         llm_model=llm_model, record=record, pooled=pool, params=params or None)
+                         llm_model=llm_model, llm_platform=llm_platform,
+                         record=record, pooled=pool, params=params or None)
 
 
 __all__ = ["JuneApiSystem", "from_env"]

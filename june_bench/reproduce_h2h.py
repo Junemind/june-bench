@@ -28,7 +28,22 @@ import os
 import sys
 
 # Reuse the friendly primitives so the two commands look and feel identical.
-from june_bench.reproduce import PRESET, _ask, _is_tty, _progress
+from june_bench.reproduce import (PRESET, _OPENROUTER_CAVEAT, _PLATFORM_JUDGE, _PLATFORM_MENU,
+                                  _ask, _is_tty, _progress)
+
+# The MATCHED contract extends to the platform (July 2026: the serving platform is part of the
+# experiment): BOTH systems' answer calls go through the same platform, chosen by the caller.
+# Cognee's side uses its custom OpenAI-compatible route, so a platform is just (endpoint, model-id
+# shape, key) — all four entries mirror the engine's X-LLM-Platform allowlist. OpenRouter keeps
+# the historical `openrouter/<id>` prefix; direct platforms use the native id verbatim, and the
+# platform-aware preflight pings the real endpoint with the real id BEFORE any money is spent, so
+# a vendor id-format quirk fails cheap instead of mid-run.
+_PLATFORM_LLM_BASE = {
+    "openrouter": "https://openrouter.ai/api/v1",
+    "openai": "https://api.openai.com/v1",
+    "anthropic": "https://api.anthropic.com/v1",
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+}
 
 _DEFAULT_MODEL = "openai/gpt-4o"                 # the matched row; Cognee can't affordably run Opus
 # June's dense-lane embedder = the default for the matched run, so `reproduce-h2h` is one command with no
@@ -37,6 +52,11 @@ _DEFAULT_MODEL = "openai/gpt-4o"                 # the matched row; Cognee can't
 # exempt from tests/test_reproduce.py::_BANNED for exactly this reason).
 _DEFAULT_EMBEDDER = "bge-large-en-v1.5"
 # Published open-pool targets, same 100-slice (EM, F1) — from the local head-to-head.
+# AGGREGATOR-ERA targets (measured via OpenRouter before the July 2026 serving drift; June's is
+# the all-asked 2026-06-16 number). Direct-platform runs will read low against june-api's entry
+# for the wrong reason and high for the right one — REPLACE at the box re-baseline with
+# per-platform tuples like reproduce._MODEL_TARGETS. Until then the target column is historical
+# context, not a verdict (h2h prints no ✓/✗).
 _TARGETS = {"june-api": (0.63, 0.80), "cognee": (0.53, 0.66)}
 _LABELS = {"june-api": "June (open-pool)", "cognee": "Cognee (graph-RAG)"}
 # Canonical metered API cost per 100 questions on gpt-4o, from the published head-to-head. Cognee's
@@ -57,6 +77,66 @@ def _cognee_per_100q(cot: bool) -> float:
 def _cost_estimate(name: str, n: int) -> float:
     """Metered-reference cost for `n` questions of a system on gpt-4o base config (0 if unknown)."""
     return _COST_PER_100Q_GPT4O.get(name, 0.0) * max(0, n) / 100.0
+
+
+def _price_sheet() -> dict:
+    """User-supplied $/100Q per system for the CHOSEN platform+model — the honest fallback when a
+    platform offers no key-level metering API. JUNE_BENCH_PRICE_PER100Q='{"june-api":0.79,
+    "cognee":20.84}'. Explicit and user-owned: the harness never invents vendor prices."""
+    import json as _json
+    raw = os.environ.get("JUNE_BENCH_PRICE_PER100Q", "").strip()
+    if not raw:
+        return {}
+    try:
+        d = _json.loads(raw)
+        return {k: float(v) for k, v in d.items()} if isinstance(d, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _platform_usage(platform: str, key: str) -> tuple[float | None, str]:
+    """(cumulative $ spent, source label) for the chosen platform — or (None, reason).
+
+    Only OpenRouter exposes a KEY-level real-time credits API, so only there is the per-phase
+    delta authoritative. OpenAI and Anthropic offer org-level cost APIs that require ADMIN-scoped
+    keys and lag real time — attempted (a user may well have pasted an admin key), narrowly
+    fail-soft, and labeled as laggy when they answer. Google offers none. When this returns None
+    the caller falls back to the user price sheet (JUNE_BENCH_PRICE_PER100Q), then to the metered
+    gpt-4o reference — every printed dollar carries its provenance either way."""
+    p = (platform or "openrouter").strip().lower()
+    if p == "openrouter":
+        u = _openrouter_usage(key)
+        return (u, "OpenRouter credits API (real-time, key-level)") if u is not None else \
+               (None, "OpenRouter credits API unreachable")
+    import time as _time
+    day_start = int(_time.time()) // 86400 * 86400
+    try:
+        import httpx
+        if p == "openai":       # org costs API — needs an admin-scoped key; daily buckets, lags
+            r = httpx.get("https://api.openai.com/v1/organization/costs",
+                          params={"start_time": day_start, "limit": 31},
+                          headers={"Authorization": f"Bearer {key}"}, timeout=10.0)
+            if r.status_code == 200:
+                total = sum(float(res.get("amount", {}).get("value", 0.0))
+                            for b in (r.json().get("data") or [])
+                            for res in (b.get("results") or []))
+                return total, "OpenAI org costs API (admin key; may lag — treat deltas as approximate)"
+        elif p == "anthropic":  # org cost report — needs an Admin API key; lags real time
+            r = httpx.get("https://api.anthropic.com/v1/organizations/cost_report",
+                          params={"starting_at": day_start},
+                          headers={"x-api-key": key, "anthropic-version": "2023-06-01"}, timeout=10.0)
+            if r.status_code == 200:
+                total = 0.0
+                for b in (r.json().get("data") or []):
+                    for res in (b.get("results") or []):
+                        try:
+                            total += float(res.get("amount", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            pass
+                return total, "Anthropic cost report API (admin key; may lag — treat deltas as approximate)"
+    except Exception:  # noqa: BLE001 — metering is an accessory, never load-bearing
+        pass
+    return None, f"{p} offers no key-level metering API (or this key lacks admin scope)"
 
 
 def _openrouter_usage(key: str) -> float | None:
@@ -187,9 +267,14 @@ def _preflight(url: str, key: str, llm_key: str, model: str) -> list[str]:
     """Cheap checks that catch the whole failure class BEFORE any money is spent. Returns a list of
     human-readable problems (empty = good)."""
     problems: list[str] = []
-    if "opus" in model.lower():                   # the $90+, aborted path
-        problems.append("Cognee on Opus was offered first, cost $90+, and never finished — this matched "
-                        "run uses gpt-4o on both sides. (June-Opus is a separate `reproduce` run.)")
+    if "opus" in model.lower() and os.environ.get("JUNE_BENCH_ALLOW_OPUS", "").strip() != "1":
+        # The $90+, aborted path — Cognee's CoT fires 4-5 calls/question, so Opus-tier pricing
+        # compounds brutally. Overridable (JUNE_BENCH_ALLOW_OPUS=1) because matched-Opus IS the
+        # original H2H design and a deliberate, budgeted run of it is legitimate — the block exists
+        # to prevent an ACCIDENTAL one, not to forbid the choice.
+        problems.append("Cognee on Opus cost $90+ historically and never finished — the default "
+                        "matched run uses gpt-4o on both sides. Set JUNE_BENCH_ALLOW_OPUS=1 to run "
+                        "matched-Opus DELIBERATELY (budget ~$50-100+ for Cognee's CoT side).")
     try:
         import cognee  # noqa: F401
     except Exception:  # noqa: BLE001
@@ -199,20 +284,24 @@ def _preflight(url: str, key: str, llm_key: str, model: str) -> list[str]:
     except Exception:  # noqa: BLE001
         problems.append("fastembed isn't installed (Cognee's local embedder) — reinstall with the extra: "
                         "pip install \"june-bench[cognee]\" (bundles it)")
-    # OpenRouter reachable with THIS key + model — fails cheap, before any ingest.
+    # The chosen PLATFORM reachable with THIS key + model — fails cheap, before any ingest.
+    # (Platform-aware since July 2026: a wrong native model id or a key fired at the wrong vendor
+    # is caught here for ~a cent, not discovered as 100 paid error rows.)
     if llm_key:
+        plat = (os.environ.get("JUNE_BENCH_LLM_PLATFORM", "") or "openrouter").strip().lower()
+        base = _PLATFORM_LLM_BASE.get(plat, _PLATFORM_LLM_BASE["openrouter"])
         try:
             import httpx
             probe = model.split("/", 1)[-1] if model.startswith("openrouter/") else model
-            r = httpx.post("https://openrouter.ai/api/v1/chat/completions",
+            r = httpx.post(f"{base}/chat/completions",
                            headers={"Authorization": f"Bearer {llm_key}"},
                            json={"model": probe, "max_tokens": 5,
                                  "messages": [{"role": "user", "content": "ping"}]}, timeout=30.0)
             if "choices" not in r.text:
-                problems.append(f"OpenRouter didn't accept {probe!r} with that key (HTTP {r.status_code}) "
+                problems.append(f"{plat} didn't accept {probe!r} with that key (HTTP {r.status_code}) "
                                 "— check the key/model before running.")
         except Exception as exc:  # noqa: BLE001
-            problems.append(f"couldn't reach OpenRouter ({exc}) — check your connection/key.")
+            problems.append(f"couldn't reach {plat} ({exc}) — check your connection/key.")
     return problems
 
 
@@ -239,14 +328,24 @@ def _apply_env(access: str, llm: str, model: str, embed: tuple[str, int] | None,
         os.environ["EMBEDDING_MODEL"] = emb[0]
         os.environ["HUGGINGFACE_TOKENIZER"] = emb[0]
         os.environ["EMBEDDING_DIMENSIONS"] = str(emb[1])
-    os.environ["LLM_PROVIDER"] = "custom"            # OpenRouter-compatible path (native Anthropic is broken)
-    os.environ["LLM_MODEL"] = model if model.startswith("openrouter/") else f"openrouter/{model}"
-    os.environ["LLM_ENDPOINT"] = "https://openrouter.ai/api/v1"
+    # Cognee's answer calls follow the SAME platform as June's (the matched contract, extended to
+    # serving — July 2026). Custom OpenAI-compatible route either way; only endpoint + id shape move.
+    _plat = (os.environ.get("JUNE_BENCH_LLM_PLATFORM", "") or "openrouter").strip().lower()
+    os.environ["LLM_PROVIDER"] = "custom"            # OpenAI-compatible path (native Anthropic is broken)
+    if _plat == "openrouter":
+        os.environ["LLM_MODEL"] = model if model.startswith("openrouter/") else f"openrouter/{model}"
+    else:
+        os.environ["LLM_MODEL"] = model              # platform-native id, verbatim (preflight verifies)
+    os.environ["LLM_ENDPOINT"] = _PLATFORM_LLM_BASE.get(_plat, _PLATFORM_LLM_BASE["openrouter"])
     os.environ["LLM_API_KEY"] = llm
     os.environ["LLM_INSTRUCTOR_MODE"] = "tool_call"
     os.environ["COGNEE_SKIP_CONNECTION_TEST"] = "true"
     os.environ["COGNEE_SEARCH_TYPE"] = "GRAPH_COMPLETION_COT" if cot else "GRAPH_COMPLETION"
-    # ── shared judge (fixed model, verbosity-agnostic) ──
+    # ── shared judge (fixed model per platform — comparable WITHIN a platform) ──
+    if _plat in _PLATFORM_JUDGE:
+        _j_url, _j_model = _PLATFORM_JUDGE[_plat]
+        os.environ.setdefault("JUNE_JUDGE_LLM_URL", _j_url)
+        os.environ.setdefault("JUNE_JUDGE_LLM_MODEL", _j_model)
     os.environ.setdefault("JUNE_JUDGE_LLM_URL", PRESET["judge_url"])
     os.environ.setdefault("JUNE_JUDGE_LLM_MODEL", PRESET["judge_model"])
     os.environ["JUNE_JUDGE_LLM_KEY"] = llm
@@ -258,9 +357,26 @@ def _resolve_inputs(args) -> tuple[str, str, bool, int]:  # noqa: ANN001
     print("retrieval + reasoning engine differs. Cognee runs locally; June runs on its endpoint.\n")
     access = (getattr(args, "key", "") or os.environ.get("JUNE_BENCH_JUNE_KEY", "")
               or _ask("1) Access key from Junemind:\n   > "))
-    llm = (getattr(args, "llm_key", "") or os.environ.get("OPENROUTER_API_KEY", "")
-           or _ask("2) Your OpenRouter API key  (pays for BOTH systems' answers, ~$10 for a full run;\n"
-                   "   get one at https://openrouter.ai/keys):\n   > ", secret=True))
+    # Platform before key (July 2026): BOTH systems' answers are served by the chosen platform,
+    # and the key prompt depends on it. Env JUNE_BENCH_LLM_PLATFORM wins; default = OpenRouter.
+    platform = ((getattr(args, "platform", "") or "")
+                or os.environ.get("JUNE_BENCH_LLM_PLATFORM", "")).strip().lower()
+    if not platform and _is_tty():
+        print("2) Which platform serves BOTH systems' answer model?  (stamped on the result)")
+        for k, (_pid, label, _keys) in sorted(_PLATFORM_MENU.items()):
+            print(f"   [{k}] {label}")
+        pc = _ask("   > ", default="1") or "1"
+        platform = _PLATFORM_MENU.get(pc, _PLATFORM_MENU["1"])[0]
+    platform = platform or "openrouter"
+    os.environ["JUNE_BENCH_LLM_PLATFORM"] = platform
+    if platform == "openrouter":
+        print(_OPENROUTER_CAVEAT)
+    _plabel = next((l for p_, l, _k in _PLATFORM_MENU.values() if p_ == platform), platform)
+    _pkeys = next((k for p_, _l, k in _PLATFORM_MENU.values() if p_ == platform), "")
+    llm = (getattr(args, "llm_key", "")
+           or __import__("june_bench.reproduce", fromlist=["_platform_env_key"])._platform_env_key(platform)
+           or _ask(f"   Your {_plabel.split(' (')[0]} API key  (pays for BOTH systems' answers, "
+                   f"~$10 for a full CoT run; get one at {_pkeys}):\n   > ", secret=True))
     # reasoning tier — match June's grounded multi-hop with Cognee's chain-of-thought (fair default)
     cot = getattr(args, "cot", None)
     if cot is None:
@@ -286,8 +402,10 @@ def _resolve_inputs(args) -> tuple[str, str, bool, int]:  # noqa: ANN001
         else:
             limit = 100
     if not access or not llm:
-        print("\nNeed both an access key and an OpenRouter key. Re-run and provide them, or pass "
-              "--key / --llm-key (or set JUNE_BENCH_JUNE_KEY / OPENROUTER_API_KEY).", file=sys.stderr)
+        from june_bench.reproduce import _PLATFORM_KEY_ENVS as _pke
+        _envs = " / ".join(_pke.get(platform, ("OPENROUTER_API_KEY",)))
+        print(f"\nNeed both an access key and a {platform} API key. Re-run and provide them, or pass "
+              f"--key / --llm-key (or set JUNE_BENCH_JUNE_KEY / {_envs}).", file=sys.stderr)
         raise SystemExit(2)
     return access, llm, bool(cot), int(limit)
 
@@ -325,6 +443,20 @@ def run_reproduce_h2h(args) -> int:  # noqa: ANN001
     # even though the key is present. `_apply_env` is pure (only sets os.environ), so applying it here —
     # ahead of pre-flight and the cost gate — is side-effect-free and removes the ordering hazard entirely.
     _apply_env(access, llm, model, embed, cot)
+    # PLATFORM CAPABILITY GUARD (mirrors reproduce): June's side sends X-LLM-Platform; an endpoint
+    # that predates it would fire this key at its default URL — refuse BEFORE any money moves.
+    _plat_g = (os.environ.get("JUNE_BENCH_LLM_PLATFORM", "") or "openrouter").strip().lower()
+    if _plat_g != "openrouter" and os.environ.get(
+            "JUNE_BENCH_ASSUME_PLATFORM_OK", "").strip() != "1":
+        from june_bench._util import probe_config
+        _cfg_g = probe_config(os.environ.get("JUNE_BENCH_JUNE_URL", ""), access)
+        _plats_g = _cfg_g.get("llm_platforms") or []
+        if _plat_g not in [str(x).lower() for x in _plats_g]:
+            print(f"\n✗ June's endpoint does not support platform {_plat_g!r} "
+                  f"(advertises: {_plats_g or 'none — predates platform selection'}). Choose "
+                  "OpenRouter, point at an upgraded endpoint, or set "
+                  "JUNE_BENCH_ASSUME_PLATFORM_OK=1 to override.", file=sys.stderr)
+            return 2
 
     problems = _preflight(url, access, llm, model)
     if problems:
@@ -348,7 +480,14 @@ def run_reproduce_h2h(args) -> int:  # noqa: ANN001
 
     results: dict[str, dict] = {}
     actual_cost: dict[str, float] = {}        # per-system REAL $ from the OpenRouter credits delta
-    prev_usage = _openrouter_usage(llm)       # baseline before the first system (None ⇒ metering off)
+    _plat = (os.environ.get("JUNE_BENCH_LLM_PLATFORM", "") or "openrouter").strip().lower()
+    prev_usage, _meter_src = _platform_usage(_plat, llm)   # (None, reason) ⇒ metering off
+    globals()["_LAST_METER_SRC"] = _meter_src if prev_usage is not None else ""
+    if prev_usage is None:
+        print(f"  · cost note: {_meter_src} — falling back to "
+              + ("your JUNE_BENCH_PRICE_PER100Q price sheet" if _price_sheet()
+                 else "the metered gpt-4o reference (set JUNE_BENCH_PRICE_PER100Q for "
+                      "platform-accurate estimates)"))
     jf = None if getattr(args, "no_judge", False) else judge_from_env()
     for name in ("june-api", "cognee"):
         print(f"\n• {_LABELS[name]} — {limit} questions, open-pool, {model}…")
@@ -358,12 +497,15 @@ def run_reproduce_h2h(args) -> int:  # noqa: ANN001
         except Exception as exc:  # noqa: BLE001 — one system failing shouldn't lose the other's number
             print(f"  ! {name} failed: {exc}", file=sys.stderr)
             continue
-        cur_usage = _openrouter_usage(llm)     # spend AFTER this system → delta = its real billed cost
+        cur_usage, _ = _platform_usage(_plat, llm)   # spend AFTER this system → delta = its billed cost
         if prev_usage is not None and cur_usage is not None:
             actual_cost[name] = max(0.0, cur_usage - prev_usage)
         if cur_usage is not None:
             prev_usage = cur_usage             # advance the baseline only on a good reading
         summary = score(recs)
+        # Harness-level worded-refusal census over the ANSWERED records only (flagged abstentions
+        # already left `answered`, so the table's flagged+worded sum never double-counts).
+        summary["worded_refusals"] = _worded_refusals([r for r in recs if not r.abstained])
         judged = None
         if jf is not None:
             try:
@@ -376,14 +518,17 @@ def run_reproduce_h2h(args) -> int:  # noqa: ANN001
     return 0
 
 
-def _print_cost(results: dict, model: str, actual: dict, cot: bool = False) -> None:
+def _print_cost(results: dict, model: str, actual: dict, cot: bool = False,
+                platform: str = "openrouter", meter_src: str = "") -> None:
     """Cost of the LLM API used, per system. Both systems bill the caller's SAME OpenRouter key (June via
     ``X-LLM-Key``, Cognee via litellm), so ``actual[name]`` — the per-phase credits delta — is the REAL
     amount OpenRouter charged this run. Falls back to the canonical metered $/100Q basis only when the
     credits API was unreachable; the Cognee basis is tier-aware (CoT ≈ 2x base). Cognee's chain-of-thought
     + one-time graph build make it far costlier per answer than June — the point of showing this."""
-    print("\n  Cost — LLM API used (billed to your OpenRouter key):")
-    have_ref = "gpt-4o" in model.lower()
+    _plat_label = "OpenRouter" if platform == "openrouter" else f"{platform} (direct)"
+    print(f"\n  Cost — LLM API used (billed to your {_plat_label} key):")
+    have_ref = "gpt-4o" in model.lower() and platform == "openrouter"
+    sheet = _price_sheet()
     cog100 = _cognee_per_100q(cot)
     for name in ("june-api", "cognee"):
         r = results.get(name)
@@ -391,11 +536,16 @@ def _print_cost(results: dict, model: str, actual: dict, cot: bool = False) -> N
             continue
         n = int(r.get("n") or 0)
         ref100 = cog100 if name == "cognee" else _COST_PER_100Q_GPT4O.get(name, 0.0)
-        if name in actual:                          # authoritative: OpenRouter's own number
+        if name in actual:                          # authoritative: the platform's own number
             c = actual[name]
+            _default_src = ("OpenRouter billed this run" if platform == "openrouter"
+                            else f"{platform} billed this run")
             note = ("server-side — not billed to your key" if (name == "june-api" and c < 0.01)
-                    else "metered — OpenRouter billed this run")
+                    else f"metered — {meter_src or _default_src}")
             print(f"    {_LABELS[name]:22} ${c:.2f}   ({note})")
+        elif name in sheet:                         # user-supplied $/100Q for THIS platform+model
+            print(f"    {_LABELS[name]:22} ~${sheet[name] * n / 100.0:.2f}   "
+                  f"(est. from your price sheet: ${sheet[name]:.2f}/100Q)")
         elif have_ref:                              # credits API down → labeled, tier-aware estimate
             print(f"    {_LABELS[name]:22} ~${ref100 * n / 100.0:.2f}   "
                   f"(est. from ${ref100:.2f}/100Q metered — credits API unavailable)")
@@ -411,12 +561,40 @@ def _print_cost(results: dict, model: str, actual: dict, cot: bool = False) -> N
               f"(metered gpt-4o reference{tier}: ${cog100:.2f} vs ${jc:.2f} per 100 questions).")
 
 
+# Worded-refusal detection at the HARNESS level, applied to BOTH systems' raw predictions with the
+# same sentinels + patterns. This closes the latent adapter asymmetry found in the July 2026 audit:
+# June's adapter flags refusals (they leave its denominator, honestly, as coverage); Cognee's
+# adapter can only flag an empty string, so its worded refusals ("insufficient data on birth
+# dates", "the context does not provide…" — both real examples from its published runs, both
+# scored wrong) were invisible as refusals. Detection here does NOT change scoring — refusals stay
+# scored exactly as before for both systems — it changes what the READER can see.
+import re as _re
+
+_REFUSAL_RX = _re.compile(
+    r"^(i don'?t know|i do not know|unknown|no answer)\b"
+    r"|does not (contain|provide|specify|mention)"
+    r"|cannot (determine|be determined|answer)"
+    r"|insufficient (data|information|evidence|context)"
+    r"|not (provided|specified|mentioned) in"
+    r"|unable to (determine|answer|find)", _re.I)
+
+
+def _worded_refusals(records) -> int:  # noqa: ANN001
+    return sum(1 for r in records if _REFUSAL_RX.search((r.prediction or "").strip()))
+
+
 def _print_h2h(results: dict, model: str, actual: dict | None = None, cot: bool = False) -> None:
     line = "─" * 64
     print("\n" + line)
     print(f"  June vs Cognee — matched open-pool · {model}")
     print(line)
-    print(f"  {'System':22} {'EM':>6} {'F1':>6} {'judged':>8}   target")
+    # `cover` is not decoration. EM/F1 here are SELECTIVE — averaged over answered items only —
+    # so a system that abstains more can print a HIGHER EM than one that answers everything.
+    # Without coverage beside it, "June 0.61 vs Cognee 0.60" can mean June answered 51 of 100
+    # and Cognee answered all 100, i.e. Cognee got roughly twice as many questions right while
+    # appearing to lose. Measured 2026-07-27; June abstained on 49/100 of this exact slice.
+    print(f"  {'System':22} {'EM':>6} {'F1':>6} {'cover':>7} {'right/asked':>12} {'wrong':>6} "
+          f"{'refuse':>7} {'judged':>8}   target")
     for name in ("june-api", "cognee"):
         r = results.get(name)
         if not r:
@@ -427,17 +605,36 @@ def _print_h2h(results: dict, model: str, actual: dict | None = None, cot: bool 
         j = r["judged"]
         t = _TARGETS.get(name)
         tgt = f"~{t[0]:.2f}/{t[1]:.2f}" if t else "—"
-        print(f"  {_LABELS[name]:22} {em:>6.2f} {f1:>6.2f} "
+        tot = s.get("n", 0) or 0
+        ansd = s.get("answered", tot)
+        cov = s.get("coverage", (ansd / tot) if tot else 0.0)
+        right = int(round(em * ansd))
+        wrong = max(0, ansd - right)
+        refusals = int(s.get("worded_refusals", 0)) + (tot - ansd)   # flagged + worded, no overlap:
+        # flagged abstentions never reach the text detector's population (they left `answered`).
+        print(f"  {_LABELS[name]:22} {em:>6.2f} {f1:>6.2f} {cov:>6.0%} "
+              f"{(em * ansd / tot if tot else 0.0):>12.2f} {wrong:>6} {refusals:>7} "
               f"{(f'{j:.0%}' if j is not None else '—'):>8}   {tgt}")
     print(line)
     ja = results.get("june-api", {}).get("summary", {}).get("em")
     ca = results.get("cognee", {}).get("summary", {}).get("em")
     if ja is not None and ca is not None:
         print(f"  Δ EM (June − Cognee): {ja - ca:+.2f}   "
-              f"({'June leads' if ja > ca else 'Cognee leads' if ca > ja else 'tie'})")
-    _print_cost(results, model, actual or {}, cot)
+              f"({'June leads' if ja > ca else 'Cognee leads' if ca > ja else 'tie'})"
+              "   ← selective: compare `right/asked` when coverage differs")
+    _print_cost(results, model, actual or {}, cot,
+                platform=(os.environ.get("JUNE_BENCH_LLM_PLATFORM", "") or "openrouter").lower(),
+                meter_src=globals().get("_LAST_METER_SRC", ""))
     print(line)
     print("  Both: same evidence pool · same answer model · same judge. Cognee ran locally.")
+    print("  Refusals are detected by the harness over BOTH systems' text with the same patterns.")
+    print("  ABSTENTION vs GAMBLING — read the two systems differently:")
+    print("  · June is absolute: it answers only what its evidence supports and refuses the rest.")
+    print("    An unsupported answer is never emitted — a June answer is a claim, not a guess.")
+    print("  · Cognee's prompt has no refusal channel: every uncertain case is a FORCED GUESS.")
+    print("    Its 100% coverage is structural, not earned — and its `wrong` column includes the")
+    print("    gambles that lost (measured on June's refused subset: Cognee's guesses ran ~50/50).")
+    print("  Same score, different contract: a wrong answer corrupts silently; a refusal is honest.")
 
 
 __all__ = ["run_reproduce_h2h"]

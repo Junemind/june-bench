@@ -80,3 +80,22 @@ and modification notes.
 - Junê: https://june.januraine.ai
 - Published results: https://june.januraine.ai (benchmarks section)
 - Releases (desktop apps): https://github.com/Junemind/June_releases
+
+## Serving platform matters (measured, July 2026)
+
+The answer model's **serving platform is part of the experiment**, and June is the system honest
+enough to show it. June answers only what its evidence supports and refuses the rest — it does not
+gamble. An aggregator (OpenRouter) routes each request to an unpinned, changing provider mix, and
+when that serving drifts conservative, June's honest refusals rise; guess-style systems have no
+refusal channel, so the same drift hides inside silently-changed guesses instead.
+
+Measured on an identical engine and identical questions (2026-07-27):
+
+| serving | gpt-4o | claude-opus-4-8 |
+|---|---|---|
+| via OpenRouter (aggregator) | 45–49 / 100 right-per-asked | 55 / 100 |
+| served DIRECT (vendor API)  | **62 / 100** | **71–72 / 100** |
+
+Use OpenRouter for one-key convenience and real-time cost metering. For accuracy-representative
+or publishable numbers, choose a **direct platform** in the menu — every result stamps the
+platform it ran on (`As-run:`), so numbers from different serving paths are never conflated.
