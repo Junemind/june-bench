@@ -465,6 +465,10 @@ def run_reproduce_h2h(args) -> int:  # noqa: ANN001
             "JUNE_BENCH_ASSUME_PLATFORM_OK", "").strip() != "1":
         from june_bench._util import probe_config
         _cfg_g = probe_config(os.environ.get("JUNE_BENCH_JUNE_URL", ""), access)
+        if _cfg_g.get("_auth_error"):
+            print("\n✗ the endpoint rejected this ACCESS KEY (HTTP 401/403) — this is an auth "
+                  "problem, not a platform problem. Check the key and re-run.", file=sys.stderr)
+            return 2
         _plats_g = _cfg_g.get("llm_platforms") or []
         if _plat_g not in [str(x).lower() for x in _plats_g]:
             print(f"\n✗ June's endpoint does not support platform {_plat_g!r} "

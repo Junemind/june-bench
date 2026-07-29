@@ -144,7 +144,13 @@ def probe_config(url: str, key: str, *, timeout: float = 5.0) -> dict:
     hdr = {"X-API-Key": key} if key else {}
     try:
         with httpx.Client(base_url=url.rstrip("/"), timeout=timeout, headers=hdr) as c:
-            a = c.get("/v1/answer/health").json()
+            r = c.get("/v1/answer/health")
+            if r.status_code in (401, 403):
+                # The endpoint is alive and rejected the KEY. Callers must not read this as
+                # "no capabilities advertised" — 2026-07-29 a wiped key table printed as
+                # "predates platform selection" and sent the operator down the wrong path.
+                return {"_auth_error": True}
+            a = r.json()
             try:
                 e = c.get("/v1/embeddings/health").json()
             except (httpx.HTTPError, httpx.InvalidURL, _json.JSONDecodeError):

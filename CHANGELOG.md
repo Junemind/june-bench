@@ -12,6 +12,15 @@ platform-aware preflight before any spend). `reproduce-h2h` now translates the p
 platform-native form (`gpt-4o`) on direct platforms; OpenRouter keeps the historical prefixed
 form. Workaround on 0.1.0: pass `--model gpt-4o` explicitly.
 
+Also from the same-day audit of every remaining OpenRouter-era assumption:
+
+- a key rejected by the endpoint (HTTP 401/403) now reads "the endpoint rejected this ACCESS KEY"
+  instead of the misleading "predates platform selection"
+- runs under 30 questions print a smoke-run caveat instead of a ✗ verdict against the n=100
+  baseline
+- the platform surface is now pinned by regression tests (native key envs per platform, no
+  vendor-prefixed id on direct platforms, judge id shape, auth-vs-capability, tiny-n verdict)
+
 ## 0.1.0 — 2026-07-27 · the serving-drift release
 
 The July 2026 investigation (see the repo's THEORY_05 write-up) found June's benchmark numbers

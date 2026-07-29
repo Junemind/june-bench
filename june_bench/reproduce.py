@@ -363,6 +363,11 @@ def run_reproduce(args) -> int:  # noqa: ANN001
     if _platform != "openrouter" and os.environ.get(
             "JUNE_BENCH_ASSUME_PLATFORM_OK", "").strip() != "1":
         _cfg = _health(os.environ.get("JUNE_BENCH_JUNE_URL", ""), access)
+    if _cfg.get("_auth_error"):
+        print("\n✗ the endpoint rejected this ACCESS KEY (HTTP 401/403) — this is an auth problem, "
+              "not a platform problem. Check the key (or get one from Junemind) and re-run.",
+              file=sys.stderr)
+        return 2
         _plats = _cfg.get("llm_platforms") or []
         if _platform not in [str(p).lower() for p in _plats]:
             print(f"\n✗ This endpoint does not support platform {_platform!r} "
@@ -422,7 +427,7 @@ def run_reproduce(args) -> int:  # noqa: ANN001
     return 0
 
 
-def _verdict(em: float, cov: float, target: tuple | None) -> str:
+def _verdict(em: float, cov: float, target: tuple | None, n: int = 0) -> str:
     """Pass/fail against the published baseline, on a COMMON denominator.
 
     Compares right-per-asked (selective EM × coverage) against the target's right-per-asked
@@ -436,6 +441,9 @@ def _verdict(em: float, cov: float, target: tuple | None) -> str:
     whether to trust June should know which one they measured."""
     if target is None:                          # no published baseline for this model — still valid
         return "(no published baseline for this model — June's pipeline + your model)"
+    if n and n < 30:
+        return (f"(smoke run: n={n} — too small to compare against the n=100 baseline; "
+                "run the full 100 for a verdict)")
     t_em, _t_f1, t_cov = target[0], target[1], (target[2] if len(target) > 2 else 1.0)
     real, t_real = em * cov, t_em * t_cov
     if real >= t_real - 0.05:
@@ -479,7 +487,7 @@ def _print_result(summary: dict, judged, model: str, args) -> None:  # noqa: ANN
         t_cov = target[2] if len(target) > 2 else 1.0
         serving = target[3] if len(target) > 3 else "serving context unrecorded"
         print(f"  Target:  ~{target[0]:.2f} / ~{target[1]:.2f} at {t_cov:.0%} coverage ({serving})")
-        print(f"  Verdict: {_verdict(em, cov, target)}")
+        print(f"  Verdict: {_verdict(em, cov, target, total)}")
     else:
         print(f"  Target:  {_verdict(em, cov, None)}")
     # The model id is a pointer, not a model (THEORY_05): stamp what this run actually used, so the
